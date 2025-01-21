@@ -1,0 +1,6 @@
+streamlit
+easyocr
+pandas
+requests
+pillow
+numpy
