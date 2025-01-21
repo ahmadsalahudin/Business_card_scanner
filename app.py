@@ -109,8 +109,8 @@ uploaded_files = st.sidebar.file_uploader(
     "Upload Business Card Images", type=["png", "jpg", "jpeg"], accept_multiple_files=(upload_option == "Bulk Upload")
 )
 
-api_url = st.sidebar.text_input("OpenAI API URL", "https://openai.chatgpt4mena.com/v1/chat/completions")
-api_key = st.sidebar.text_input("OpenAI API Key", "sk-tjl7ydnbz0Q6Ic3kW61Cc75YzHAtlwDP2ow0cgu31NV5meZT", type="password")
+api_url = st.sidebar.text_input("OpenAI API URL")
+api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
 if uploaded_files and api_url and api_key:
     results = []
