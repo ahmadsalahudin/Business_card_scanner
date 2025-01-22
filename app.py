@@ -15,36 +15,22 @@ MODEL_PATH = Path.home() / '.EasyOCR' / 'model' / 'english_g2.pth'
 
 @st.cache_resource
 def initialize_reader():
-    """Initialize EasyOCR reader with progress tracking"""
-    if not MODEL_PATH.exists():
-        with st.spinner("Downloading English OCR model (this may take a few minutes)..."):
-            progress_text = st.empty()
-            progress_bar = st.progress(0)
-            
-            def progress_callback(count, total, status=''):
-                progress = float(count) / float(total)
-                progress_bar.progress(progress)
-                progress_text.text(f"Downloaded: {count}/{total} bytes")
-            
-            try:
-                reader = easyocr.Reader(['en'], download_enabled=True, 
-                                      progress_callback=progress_callback)
-                progress_bar.empty()
-                progress_text.empty()
-                return reader
-            except Exception as e:
-                st.error(f"Failed to download model: {str(e)}")
-                return None
-    else:
-        try:
-            return easyocr.Reader(['en'], download_enabled=False)
-        except Exception as e:
-            st.error(f"Failed to load model: {str(e)}")
-            return None
+    """Initialize EasyOCR reader"""
+    try:
+        if not MODEL_PATH.exists():
+            st.info("Downloading model... Interface will remain usable but OCR won't work until download completes.")
+            reader = easyocr.Reader(['en'], download_enabled=True)
+        else:
+            reader = easyocr.Reader(['en'], download_enabled=False)
+        return reader
+    except Exception as e:
+        st.error(f"Failed to initialize model: {str(e)}")
+        return None
 
 def extract_text_from_image(image, reader):
     """Extracts text from a single image using EasyOCR."""
     if reader is None:
+        st.warning("Model still downloading. Please wait and try again.")
         return []
     image_array = np.array(image)
     return reader.readtext(image_array, detail=0, paragraph=True)
@@ -132,10 +118,6 @@ def main():
     # Initialize reader
     reader = initialize_reader()
 
-    if reader is None:
-        st.warning("OCR model initialization failed. Please refresh the page to try again.")
-        return
-
     # Upload options
     upload_option = st.sidebar.radio("Upload Mode", ("Bulk Upload", "Individual Upload"))
 
@@ -167,10 +149,8 @@ def main():
 
                 st.text(f"Extracted Text: {extracted_text}")
 
-                # Preprocess text
+                # Preprocess text and send to API
                 cleaned_text = preprocess_text(extracted_text)
-
-                # Send to OpenAI API
                 with st.spinner("Classifying with OpenAI API..."):
                     ner_output = send_to_openai_api(cleaned_text, api_url, api_key)
                     if ner_output and not ner_output.get("error"):
