@@ -60,7 +60,7 @@ def send_to_openai_api(processed_data, api_url, api_key):
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "gpt-4o",
+        "model": "gpt-4o-mini",
         "messages": [
             {"role": "system", "content": "You are a Master Business Card Classifier,you ALWAYS think step by step and COT and Hiddent thinking before you make any decision. You are provided with the OCR output of business card in text that can be messed up in differnet ways and in the wrong order, your job is to preprocess the text, and sort it and correct any issues in it completely, then classify each item type, like name or person name, job title, company, phone, mobile, email, website, address including all possible variations. and after cleaning any irrelevant text, your output must be confirmed, the final OUTPUT MUST BE ONLY IN JSON FORMAT WITH BUSINESS CARD ITEMS ONLY, THIS IS A LIFE OR DEATH SITUATION ANSWERS MUST BE COMPLETE"},
             {"role": "user", "content": processed_data}
