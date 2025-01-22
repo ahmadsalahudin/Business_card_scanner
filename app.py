@@ -7,13 +7,45 @@ import re
 from io import BytesIO
 from PIL import Image
 import numpy as np
+import os
+from pathlib import Path
 
-# Initialize EasyOCR reader
-reader = easyocr.Reader(['en'])
+# Define model path
+MODEL_PATH = Path.home() / '.EasyOCR' / 'model' / 'english_g2.pth'
 
-def extract_text_from_image(image):
+@st.cache_resource
+def initialize_reader():
+    """Initialize EasyOCR reader with progress tracking"""
+    if not MODEL_PATH.exists():
+        with st.spinner("Downloading English OCR model (this may take a few minutes)..."):
+            progress_text = st.empty()
+            progress_bar = st.progress(0)
+            
+            def progress_callback(count, total, status=''):
+                progress = float(count) / float(total)
+                progress_bar.progress(progress)
+                progress_text.text(f"Downloaded: {count}/{total} bytes")
+            
+            try:
+                reader = easyocr.Reader(['en'], download_enabled=True, 
+                                      progress_callback=progress_callback)
+                progress_bar.empty()
+                progress_text.empty()
+                return reader
+            except Exception as e:
+                st.error(f"Failed to download model: {str(e)}")
+                return None
+    else:
+        try:
+            return easyocr.Reader(['en'], download_enabled=False)
+        except Exception as e:
+            st.error(f"Failed to load model: {str(e)}")
+            return None
+
+def extract_text_from_image(image, reader):
     """Extracts text from a single image using EasyOCR."""
-    # Convert PIL image to NumPy array
+    if reader is None:
+        return []
     image_array = np.array(image)
     return reader.readtext(image_array, detail=0, paragraph=True)
 
@@ -28,26 +60,25 @@ def send_to_openai_api(processed_data, api_url, api_key):
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "gpt-4o",
         "messages": [
-            {"role": "system", "content": "You are a Master Business Card Classifier, you are provided with the OCR output of business card in text, your job is to classify each item type, like name, phone number, email, etc. And you output them in JSON format after cleaning any irrelevant text, you think step by step before you make any decision, and your output must be confirmed, OUTPUT IS ONLY IN JSON FORMAT WITH CARD ITEMS ONLY"},
+            {"role": "system", "content": "You are a Master Business Card Classifier,you ALWAYS think step by step and COT and Hiddent thinking before you make any decision. You are provided with the OCR output of business card in text that can be messed up in differnet ways and in the wrong order, your job is to preprocess the text, and sort it and correct any issues in it completely, then classify each item type, like name or person name, job title, company, phone, mobile, email, website, address including all possible variations. and after cleaning any irrelevant text, your output must be confirmed, the final OUTPUT MUST BE ONLY IN JSON FORMAT WITH BUSINESS CARD ITEMS ONLY, THIS IS A LIFE OR DEATH SITUATION ANSWERS MUST BE COMPLETE"},
             {"role": "user", "content": processed_data}
         ]
     }
-    response = requests.post(api_url, headers=headers, json=payload)
-    if response.status_code == 200:
+    try:
+        response = requests.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
         return response.json()
-    else:
+    except requests.exceptions.RequestException as e:
         return {
             "error": True,
-            "status_code": response.status_code,
-            "message": response.text
+            "status_code": getattr(e.response, 'status_code', None),
+            "message": str(e)
         }
 
 def parse_ner_output(ner_output):
     """Parses the NER output to extract specific business card fields."""
-    
-    # Field mappings with company variations
     field_mappings = {
         'name': ['name', 'full_name', 'person_name'],
         'job_title': ['job_title', 'title', 'position', 'role'],
@@ -61,12 +92,10 @@ def parse_ner_output(ner_output):
     try:
         raw_content = ner_output["choices"][0]["message"]["content"]
         
-        # First attempt: Direct JSON parsing
         try:
             json_data = json.loads(raw_content.strip())
             parsed_data = {}
             
-            # Map fields using variations
             for standard_key, variations in field_mappings.items():
                 for variant in variations:
                     if value := json_data.get(variant):
@@ -74,7 +103,6 @@ def parse_ner_output(ner_output):
                         break
                         
         except json.JSONDecodeError:
-            # Fallback: Regex patterns with company variations
             patterns = {
                 'name': r'(?i)"(?:name|full[_\s]name|person[_\s]name)":\s*"([^"]+)"',
                 'job_title': r'(?i)"(?:job[_\s]title|title|position|role)":\s*"([^"]+)"',
@@ -90,7 +118,6 @@ def parse_ner_output(ner_output):
                 if match := re.search(pattern, raw_content):
                     parsed_data[field.title()] = match.group(1).strip()
 
-        # Clean empty values
         parsed_data = {k: v for k, v in parsed_data.items() if v}
         return parsed_data
 
@@ -98,73 +125,93 @@ def parse_ner_output(ner_output):
         st.error(f"Failed to parse NER output: {str(e)}")
         return {"error": f"NER parsing failed: {str(e)}"}
 
-st.title("Business Card Text Extractor and Classifier")
-st.sidebar.title("Upload Options")
+def main():
+    st.title("Business Card Text Extractor and Classifier")
+    st.sidebar.title("Upload Options")
 
-# Upload options
-upload_option = st.sidebar.radio("Upload Mode", ("Bulk Upload", "Individual Upload"))
+    # Initialize reader
+    reader = initialize_reader()
 
-# Upload images
-uploaded_files = st.sidebar.file_uploader(
-    "Upload Business Card Images", type=["png", "jpg", "jpeg"], accept_multiple_files=(upload_option == "Bulk Upload")
-)
+    if reader is None:
+        st.warning("OCR model initialization failed. Please refresh the page to try again.")
+        return
 
-api_url = st.sidebar.text_input("OpenAI API URL")
-api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+    # Upload options
+    upload_option = st.sidebar.radio("Upload Mode", ("Bulk Upload", "Individual Upload"))
 
-if uploaded_files and api_url and api_key:
-    results = []
-    progress_bar = st.progress(0)
-    for i, uploaded_file in enumerate(uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]):
-        st.info(f"Processing file: {uploaded_file.name}")
-        image = Image.open(uploaded_file)
+    # Upload images
+    uploaded_files = st.sidebar.file_uploader(
+        "Upload Business Card Images", 
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=(upload_option == "Bulk Upload")
+    )
 
-        # Extract text
-        extracted_text = extract_text_from_image(image)
-        st.text(f"Extracted Text: {extracted_text}")
+    api_url = st.sidebar.text_input("OpenAI API URL")
+    api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
-        # Preprocess text
-        cleaned_text = preprocess_text(extracted_text)
+    if uploaded_files and api_url and api_key:
+        results = []
+        files_to_process = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
+        progress_bar = st.progress(0)
 
-        # Send to OpenAI API
-        with st.spinner("Classifying with OpenAI API..."):
-            ner_output = send_to_openai_api(cleaned_text, api_url, api_key)
-            if ner_output and not ner_output.get("error"):
-                parsed_data = parse_ner_output(ner_output)
-                if parsed_data and not parsed_data.get("error"):
-                    results.append({
-                        "File Name": uploaded_file.name,
-                        **parsed_data
-                    })
-                else:
-                    error_message = parsed_data.get("error", "Unknown parsing error")
-                    st.error(f"Failed to parse NER output: {error_message}")
-            else:
-                error_message = ner_output.get("message", "Unknown error") if ner_output else "Unknown error"
-                st.error(f"Failed to process data with OpenAI API. Status Code: {ner_output.get('status_code', 'N/A')} Error: {error_message}")
+        for i, uploaded_file in enumerate(files_to_process):
+            try:
+                st.info(f"Processing file: {uploaded_file.name}")
+                image = Image.open(uploaded_file)
 
-        # Update progress bar
-        progress_bar.progress((i + 1) / len(uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]))
+                # Extract text
+                extracted_text = extract_text_from_image(image, reader)
+                if not extracted_text:
+                    st.warning(f"No text extracted from {uploaded_file.name}")
+                    continue
 
-    # Convert results to DataFrame
-    if results:
-        st.success("Processing complete!")
-        results_df = pd.DataFrame(results)
+                st.text(f"Extracted Text: {extracted_text}")
 
-        # Save results to CSV
-        csv_buffer = BytesIO()
-        results_df.to_csv(csv_buffer, index=False)
-        csv_buffer.seek(0)
+                # Preprocess text
+                cleaned_text = preprocess_text(extracted_text)
 
-        # Display results
-        st.dataframe(results_df)
+                # Send to OpenAI API
+                with st.spinner("Classifying with OpenAI API..."):
+                    ner_output = send_to_openai_api(cleaned_text, api_url, api_key)
+                    if ner_output and not ner_output.get("error"):
+                        parsed_data = parse_ner_output(ner_output)
+                        if parsed_data and not parsed_data.get("error"):
+                            results.append({
+                                "File Name": uploaded_file.name,
+                                **parsed_data
+                            })
+                        else:
+                            error_message = parsed_data.get("error", "Unknown parsing error")
+                            st.error(f"Failed to parse NER output: {error_message}")
+                    else:
+                        error_message = ner_output.get("message", "Unknown error") if ner_output else "Unknown error"
+                        st.error(f"Failed to process data with OpenAI API. Status Code: {ner_output.get('status_code', 'N/A')} Error: {error_message}")
 
-        # Download link
-        st.download_button(
-            "Download CSV Results",
-            csv_buffer,
-            file_name="business_card_results.csv",
-            mime="text/csv",
-        )
-else:
-    st.warning("Please upload images and provide API credentials to start.")
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
+                continue
+
+            finally:
+                progress_bar.progress((i + 1) / len(files_to_process))
+
+        # Display and save results
+        if results:
+            st.success("Processing complete!")
+            results_df = pd.DataFrame(results)
+            st.dataframe(results_df)
+
+            csv_buffer = BytesIO()
+            results_df.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+
+            st.download_button(
+                "Download CSV Results",
+                csv_buffer,
+                file_name="business_card_results.csv",
+                mime="text/csv",
+            )
+    else:
+        st.warning("Please upload images and provide API credentials to start.")
+
+if __name__ == "__main__":
+    main()
