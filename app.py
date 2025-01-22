@@ -15,14 +15,23 @@ MODEL_PATH = Path.home() / '.EasyOCR' / 'model' / 'english_g2.pth'
 
 @st.cache_resource
 def initialize_reader():
-    """Initialize EasyOCR reader"""
     try:
         if not MODEL_PATH.exists():
-            st.info("Downloading model... Interface will remain usable but OCR won't work until download completes.")
+            status = st.empty()
+            initial_size = 0
+            reader = None
+            
+            while not MODEL_PATH.exists() or initial_size != MODEL_PATH.stat().st_size:
+                if MODEL_PATH.exists():
+                    initial_size = MODEL_PATH.stat().st_size
+                    status.info(f"Downloading model: {initial_size/1024/1024:.1f}MB downloaded")
+                    time.sleep(1)
+                    
             reader = easyocr.Reader(['en'], download_enabled=True)
+            status.success("Model download complete!")
+            return reader
         else:
-            reader = easyocr.Reader(['en'], download_enabled=False)
-        return reader
+            return easyocr.Reader(['en'], download_enabled=False)
     except Exception as e:
         st.error(f"Failed to initialize model: {str(e)}")
         return None
