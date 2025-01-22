@@ -7,42 +7,34 @@ import re
 from io import BytesIO
 from PIL import Image
 import numpy as np
-import os
-from pathlib import Path
 
-# Define model path
-MODEL_PATH = Path.home() / '.EasyOCR' / 'model' / 'english_g2.pth'
+# Initialize model state
+if 'model_ready' not in st.session_state:
+    st.session_state.model_ready = False
 
 @st.cache_resource
 def initialize_reader():
+    """Initialize EasyOCR reader"""
     try:
-        if not MODEL_PATH.exists():
-            status = st.empty()
-            initial_size = 0
-            reader = None
-            
-            while not MODEL_PATH.exists() or initial_size != MODEL_PATH.stat().st_size:
-                if MODEL_PATH.exists():
-                    initial_size = MODEL_PATH.stat().st_size
-                    status.info(f"Downloading model: {initial_size/1024/1024:.1f}MB downloaded")
-                    time.sleep(1)
-                    
-            reader = easyocr.Reader(['en'], download_enabled=True)
-            status.success("Model download complete!")
+        with st.spinner("Initializing OCR model (will download if needed)..."):
+            reader = easyocr.Reader(['en'])
+            st.session_state.model_ready = True
             return reader
-        else:
-            return easyocr.Reader(['en'], download_enabled=False)
     except Exception as e:
         st.error(f"Failed to initialize model: {str(e)}")
         return None
 
 def extract_text_from_image(image, reader):
     """Extracts text from a single image using EasyOCR."""
-    if reader is None:
-        st.warning("Model still downloading. Please wait and try again.")
+    if not st.session_state.model_ready:
+        st.warning("OCR model is not ready yet. Please wait...")
         return []
-    image_array = np.array(image)
-    return reader.readtext(image_array, detail=0, paragraph=True)
+    try:
+        image_array = np.array(image)
+        return reader.readtext(image_array, detail=0, paragraph=True)
+    except Exception as e:
+        st.error(f"Error during text extraction: {str(e)}")
+        return []
 
 def preprocess_text(text):
     """Cleans and preprocesses the extracted text."""
@@ -126,7 +118,13 @@ def main():
 
     # Initialize reader
     reader = initialize_reader()
+    if not reader:
+        st.error("Failed to initialize OCR model. Please refresh the page.")
+        return
 
+    if st.session_state.model_ready:
+        st.success("OCR model ready!")
+    
     # Upload options
     upload_option = st.sidebar.radio("Upload Mode", ("Bulk Upload", "Individual Upload"))
 
